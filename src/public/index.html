@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Supabase MCP Server Tester</title>
+    <style>
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+          Oxygen, Ubuntu, Cantarell, "Open Sans", "Helvetica Neue", sans-serif;
+        max-width: 1000px;
+        margin: 0 auto;
+        padding: 20px;
+        line-height: 1.6;
+      }
+
+      h1,
+      h2,
+      h3 {
+        margin-top: 1.5em;
+      }
+
+      pre {
+        background-color: #f5f5f5;
+        padding: 10px;
+        border-radius: 5px;
+        overflow-x: auto;
+      }
+
+      button {
+        background-color: #4caf50;
+        border: none;
+        color: white;
+        padding: 8px 16px;
+        text-align: center;
+        text-decoration: none;
+        display: inline-block;
+        font-size: 14px;
+        margin: 4px 2px;
+        cursor: pointer;
+        border-radius: 4px;
+      }
+
+      input,
+      select {
+        padding: 8px;
+        margin: 5px 0;
+        border: 1px solid #ddd;
+        border-radius: 4px;
+      }
+
+      .response {
+        margin-top: 20px;
+        border: 1px solid #ddd;
+        padding: 10px;
+        border-radius: 5px;
+        height: 300px;
+        overflow-y: auto;
+      }
+
+      .status {
+        font-size: 14px;
+        margin-top: 10px;
+        font-style: italic;
+      }
+
+      .connected {
+        color: green;
+      }
+
+      .disconnected {
+        color: red;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Supabase MCP Server Tester</h1>
+
+    <div class="status disconnected" id="status">Disconnected</div>
+
+    <h2>Connection</h2>
+    <button id="connect">Connect to Server</button>
+    <button id="disconnect" disabled>Disconnect</button>
+
+    <h2>Resources</h2>
+    <button id="list-tables">List Tables</button>
+    <div>
+      <input type="text" id="table-name" placeholder="Table name" />
+      <button id="get-schema">Get Schema</button>
+    </div>
+
+    <h2>Tools</h2>
+    <div>
+      <textarea
+        id="sql-query"
+        rows="4"
+        style="width: 100%"
+        placeholder="SELECT * FROM your_table LIMIT 10"
+      ></textarea>
+      <button id="run-query">Run Query</button>
+    </div>
+
+    <div>
+      <input type="text" id="analyze-table-name" placeholder="Table name" />
+      <button id="analyze-table">Analyze Table</button>
+    </div>
+
+    <div>
+      <input type="text" id="related-table-name" placeholder="Table name" />
+      <button id="find-related">Find Related Tables</button>
+    </div>
+
+    <h2>Prompts</h2>
+    <div>
+      <select id="prompt-type">
+        <option value="table-exploration">Table Exploration</option>
+        <option value="data-summary">Data Summary</option>
+        <option value="relationship-analysis">Relationship Analysis</option>
+      </select>
+      <input type="text" id="prompt-table-name" placeholder="Table name" />
+      <input
+        type="number"
+        id="prompt-limit"
+        placeholder="Limit (for data summary)"
+        min="1"
+        value="10"
+      />
+      <button id="use-prompt">Use Prompt</button>
+    </div>
+
+    <h2>Response</h2>
+    <pre class="response" id="response"></pre>
+
+    <script>
+      let connectionId = null;
+      let eventSource = null;
+      let requestId = 1;
+
+      const statusEl = document.getElementById("status");
+      const responseEl = document.getElementById("response");
+      const connectBtn = document.getElementById("connect");
+      const disconnectBtn = document.getElementById("disconnect");
+
+      // Connect to the server
+      connectBtn.addEventListener("click", () => {
+        if (eventSource) {
+          eventSource.close();
+        }
+
+        responseEl.textContent = "Connecting to server...";
+
+        eventSource = new EventSource("/sse");
+
+        eventSource.onmessage = (event) => {
+          const data = JSON.parse(event.data);
+
+          if (data.type === "connection") {
+            connectionId = data.id;
+            statusEl.textContent = `Connected (ID: ${connectionId})`;
+            statusEl.classList.remove("disconnected");
+            statusEl.classList.add("connected");
+
+            connectBtn.disabled = true;
+            disconnectBtn.disabled = false;
+
+            responseEl.textContent = "Connected successfully!";
+          } else {
+            // Handle MCP protocol messages
+            responseEl.textContent = JSON.stringify(data, null, 2);
+          }
+        };
+
+        eventSource.onerror = (error) => {
+          console.error("SSE error:", error);
+          responseEl.textContent = "Connection error: " + JSON.stringify(error);
+          disconnect();
+        };
+      });
+
+      // Disconnect from the server
+      disconnectBtn.addEventListener("click", disconnect);
+
+      function disconnect() {
+        if (eventSource) {
+          eventSource.close();
+          eventSource = null;
+        }
+
+        connectionId = null;
+        statusEl.textContent = "Disconnected";
+        statusEl.classList.remove("connected");
+        statusEl.classList.add("disconnected");
+
+        connectBtn.disabled = false;
+        disconnectBtn.disabled = true;
+
+        responseEl.textContent = "Disconnected from server.";
+      }
+
+      // Helper to send a request to the server
+      async function sendRequest(request) {
+        if (!connectionId) {
+          responseEl.textContent =
+            "Not connected to server. Click Connect first.";
+          return;
+        }
+
+        const reqId = String(requestId++);
+        request.id = reqId;
+
+        try {
+          const response = await fetch(`/messages/${connectionId}`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify(request),
+          });
+
+          if (!response.ok) {
+            throw new Error(`HTTP error ${response.status}`);
+          }
+
+          responseEl.textContent = "Request sent. Waiting for response...";
+        } catch (error) {
+          console.error("Request error:", error);
+          responseEl.textContent = "Error sending request: " + error.message;
+        }
+      }
+
+      // List Tables
+      document.getElementById("list-tables").addEventListener("click", () => {
+        sendRequest({
+          jsonrpc: "2.0",
+          method: "mcp.readResource",
+          params: {
+            uri: "schema://tables",
+          },
+        });
+      });
+
+      // Get Schema
+      document.getElementById("get-schema").addEventListener("click", () => {
+        const tableName = document.getElementById("table-name").value.trim();
+
+        if (!tableName) {
+          responseEl.textContent = "Please enter a table name.";
+          return;
+        }
+
+        sendRequest({
+          jsonrpc: "2.0",
+          method: "mcp.readResource",
+          params: {
+            uri: `schema://table/${tableName}`,
+          },
+        });
+      });
+
+      // Run Query
+      document.getElementById("run-query").addEventListener("click", () => {
+        const sql = document.getElementById("sql-query").value.trim();
+
+        if (!sql) {
+          responseEl.textContent = "Please enter an SQL query.";
+          return;
+        }
+
+        sendRequest({
+          jsonrpc: "2.0",
+          method: "mcp.callTool",
+          params: {
+            name: "query",
+            arguments: {
+              sql,
+            },
+          },
+        });
+      });
+
+      // Analyze Table
+      document.getElementById("analyze-table").addEventListener("click", () => {
+        const tableName = document
+          .getElementById("analyze-table-name")
+          .value.trim();
+
+        if (!tableName) {
+          responseEl.textContent = "Please enter a table name.";
+          return;
+        }
+
+        sendRequest({
+          jsonrpc: "2.0",
+          method: "mcp.callTool",
+          params: {
+            name: "analyze-table",
+            arguments: {
+              tableName,
+            },
+          },
+        });
+      });
+
+      // Find Related Tables
+      document.getElementById("find-related").addEventListener("click", () => {
+        const tableName = document
+          .getElementById("related-table-name")
+          .value.trim();
+
+        if (!tableName) {
+          responseEl.textContent = "Please enter a table name.";
+          return;
+        }
+
+        sendRequest({
+          jsonrpc: "2.0",
+          method: "mcp.callTool",
+          params: {
+            name: "find-related-tables",
+            arguments: {
+              tableName,
+            },
+          },
+        });
+      });
+
+      // Use Prompt
+      document.getElementById("use-prompt").addEventListener("click", () => {
+        const promptType = document.getElementById("prompt-type").value;
+        const tableName = document
+          .getElementById("prompt-table-name")
+          .value.trim();
+
+        if (!tableName) {
+          responseEl.textContent = "Please enter a table name.";
+          return;
+        }
+
+        const args = { tableName };
+
+        // Add limit for data summary
+        if (promptType === "data-summary") {
+          args.limit =
+            parseInt(document.getElementById("prompt-limit").value) || 10;
+        }
+
+        sendRequest({
+          jsonrpc: "2.0",
+          method: "mcp.getPrompt",
+          params: {
+            name: promptType,
+            arguments: args,
+          },
+        });
+      });
+    </script>
+  </body>
+</html>
